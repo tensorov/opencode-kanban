@@ -86,6 +86,20 @@ pub struct App {
     pub project_detail_cache: Option<ProjectDetailCache>,
     pub(crate) last_click: Option<(u16, u16, Instant)>,
     pub(crate) pending_gg_at: Option<Instant>,
+    #[cfg(feature = "omo")]
+    pub omo_enabled: bool,
+    #[cfg(feature = "omo")]
+    pub omo_state: Option<crate::omo::types::OmoState>,
+    #[cfg(feature = "omo")]
+    pub omo_adapter: Option<crate::omo::adapter::OmoAdapter>,
+    #[cfg(feature = "omo")]
+    pub omo_plans: Vec<crate::omo::types::PlanCard>,
+    #[cfg(feature = "omo")]
+    pub omo_focused_plan: Option<usize>,
+    #[cfg(feature = "omo")]
+    pub omo_detail_content: Option<Vec<String>>,
+    #[cfg(feature = "omo")]
+    pub omo_detail_scroll: usize,
 }
 
 pub(crate) fn load_project_detail(
@@ -174,6 +188,54 @@ impl App {
             .unwrap_or(TodoVisualizationMode::Checklist);
         let default_view_mode = default_view_mode(&settings);
 
+        #[cfg(feature = "omo")]
+        let (omo_enabled, omo_state, omo_adapter, omo_plans) = {
+            let (omo_enabled, omo_state) = if std::env::var("OMO_DISABLED").is_ok() {
+                (false, None)
+            } else {
+                let omo_home = dirs::home_dir().map(|p| p.join(".omo"));
+                match omo_home {
+                    Some(ref path) if path.join("plans").exists() => {
+                        match crate::omo::fs_reader::FsPlanReader::from_omo_home() {
+                            Ok(reader) => {
+                                let notepads = match &omo_home {
+                                    Some(p) => crate::omo::notepad::discover_notepads(p),
+                                    None => vec![],
+                                };
+                                let state = crate::omo::types::OmoState {
+                                    reader: Box::new(reader),
+                                    active_plan_slug: None,
+                                    plans_loaded: false,
+                                    notepads,
+                                };
+                                (true, Some(state))
+                            }
+                            Err(_) => (false, None),
+                        }
+                    }
+                    _ => (false, None),
+                }
+            };
+
+            let omo_adapter = if omo_enabled {
+                match crate::omo::fs_reader::FsPlanReader::from_omo_home() {
+                    Ok(reader) => {
+                        let mut adapter = crate::omo::adapter::OmoAdapter::new(Box::new(reader));
+                        adapter.load_plans();
+                        Some(adapter)
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+            let omo_plans = omo_adapter
+                .as_ref()
+                .map(|a| a.get_plans().to_vec())
+                .unwrap_or_default();
+            (omo_enabled, omo_state, omo_adapter, omo_plans)
+        };
+
         let mut app = Self {
             should_quit: false,
             pulse_phase: 0,
@@ -240,9 +302,32 @@ impl App {
             project_detail_cache: None,
             last_click: None,
             pending_gg_at: None,
+            #[cfg(feature = "omo")]
+            omo_enabled,
+            #[cfg(feature = "omo")]
+            omo_state,
+            #[cfg(feature = "omo")]
+            omo_adapter,
+            #[cfg(feature = "omo")]
+            omo_plans,
+            #[cfg(feature = "omo")]
+            omo_focused_plan: None,
+            #[cfg(feature = "omo")]
+            omo_detail_content: None,
+            #[cfg(feature = "omo")]
+            omo_detail_scroll: 0,
         };
 
         app.refresh_data()?;
+
+        #[cfg(feature = "omo")]
+        // Load omo plans eagerly
+        if let Some(adapter) = &mut app.omo_adapter {
+            adapter.load_plans();
+            app.omo_plans = adapter.get_plans().to_vec();
+            app.footer_notice = Some(format!("Loaded {} omo plan(s)", app.omo_plans.len()));
+        }
+
         app.refresh_projects()?;
 
         if let Some(name) = project_name {
@@ -439,7 +524,15 @@ impl App {
         });
 
         if !self.categories.is_empty() {
-            self.focused_column = self.focused_column.min(self.categories.len() - 1);
+            #[cfg(feature = "omo")]
+            let max_col = if self.omo_enabled {
+                self.categories.len()
+            } else {
+                self.categories.len().saturating_sub(1)
+            };
+            #[cfg(not(feature = "omo"))]
+            let max_col = self.categories.len().saturating_sub(1);
+            self.focused_column = self.focused_column.min(max_col);
             self.selected_task_per_column
                 .entry(self.focused_column)
                 .or_insert(0);

@@ -117,6 +117,198 @@ Each project uses its own SQLite file and board state.
 - Press `v` to toggle between detail/kanban view
 - Check detail view for session running state in depth
 
+## Omo Plans Integration
+
+This fork adds support for [oh-my-openagent](https://github.com/oh-my-openagent/oh) (`.omo`) plan files.
+It reads your plan files from `~/.omo/plans/*.md`, parses them, and renders a **PLANS** column on the kanban board alongside your regular tasks.
+
+### Quick start (30 seconds)
+
+1. **Create a plan file:**
+
+```bash
+mkdir -p ~/.omo/plans ~/.omo/notepads
+
+cat > ~/.omo/plans/my-feature.md << 'EOF'
+# my-feature - New Feature Plan
+
+## TL;DR
+**What you'll get:** A new feature that does X
+**Estimated effort:** 3 days
+
+## Scope
+### Must have
+- Feature implementation
+- Tests
+
+### Must NOT have
+- Premature optimization
+
+## Tasks
+- [x] Research
+- [ ] Implementation
+- [ ] Tests
+- [ ] Deploy
+
+## Technical approach
+Use the existing service layer, add a new handler.
+EOF
+```
+
+2. **Start the kanban:** (must be inside tmux)
+
+```bash
+opencode-kanban
+```
+
+3. **Use plans in the UI:**
+
+```
+┌──────────┐ ┌───────────┐ ┌─────────────┐
+│  TODO    │ │  DOING    │ │   PLANS     │
+│          │ │           │ │             │
+│ Task 1 ◄─┼─│ Task A    │ │ my-feature  │◀─ focused card
+│          │ │           │ │ [1/3]       │
+│          │ │           │ │ Drafting    │
+└──────────┘ └───────────┘ └─────────────┘
+                               ↑
+                    ╔══════════╧══════════╗
+                    ║  Detail Overlay     ║
+                    ║                     ║
+                    ║  my-feature —       ║
+                    ║  New Feature Plan   ║
+                    ║                     ║
+                    ║  TL;DR: A new       ║
+                    ║  feature that does X║
+                    ║                     ║
+                    ║  [✓] Research       ║
+                    ║  [ ] Implementation ║
+                    ║  [ ] Tests          ║
+                    ║  [ ] Deploy         ║
+                    ║                     ║
+                    ║  Notepad: 23 entries║
+                    ║                     ║
+                    ║  Press w → start    ║
+                    ╚═════════════════════╝
+   ── PLANS column appears ──
+   automatically when         Enter → open detail overlay
+   ~/.omo/plans/ exists       w     → create tmux session + opencode
+                              Esc   → close overlay
+```
+
+### Step-by-step guide
+
+#### Step 1 — Create a plan
+
+Place files at `~/.omo/plans/<slug>.md`. The parser recognizes these sections:
+
+| Section | What gets parsed |
+|---------|-----------------|
+| `# slug — Title` | slug, title |
+| `## TL;DR` | **key:** value metadata pairs |
+| `## Scope / ### Must have` | scope items |
+| `## Any section` | `- [ ]` / `- [x]` checklist items |
+
+The first line **must** be `# <slug> - <Title>` where slug matches the filename (without `.md`).
+
+#### Step 2 — Open the kanban
+
+The **PLANS** column appears automatically when `~/.omo/plans/` exists on disk.
+
+- **Enter** on a plan card → opens the detail overlay
+- **j/k** inside the overlay → scroll content
+- **Esc** → close the overlay
+
+#### Step 3 — Start work (`w`)
+
+Press **`w`** inside the detail overlay to start working on a plan:
+
+1. Plan status changes to **Active**
+2. A detached tmux session is created: `omo-<slug>`
+3. `opencode` launches inside the session
+4. A session marker is prepended to the matching `learnings.md` file
+5. A toast notification appears at the bottom of the screen
+
+To return from the working session back to the kanban, press `Prefix+K` (standard `switch-client -l`).
+
+#### Step 4 — Notepad linkage
+
+Notepad files live at `~/.omo/notepads/<project>/learnings.md`. The mapping from plan slug to notepad project uses the first two hyphen-separated segments:
+- `my-feature-x` → project `my-feature`
+- `fintesla-planishche-feature-y` → project `fintesla-planishche`
+
+Notepad excerpts appear in the detail overlay under a **"📓 learnings.md"** heading.
+
+### Plan file format (reference)
+
+```markdown
+# <slug> - <Title>
+
+## TL;DR
+**Key:** Value
+
+## Scope
+### Must have
+### Must NOT have
+
+## Any section
+- [ ] open task
+- [x] completed task
+```
+
+### Test drive with a temp plan
+
+```bash
+# Create a temporary plan outside ~/.omo
+mkdir -p /tmp/demo-omo/plans
+cat > /tmp/demo-omo/plans/test-plan.md << 'EOF'
+# test-plan - Demo Plan
+
+## TL;DR
+**What you'll get:** A demo
+
+## Tasks
+- [ ] step one
+- [x] step two
+EOF
+
+# Symlink so the kanban picks it up
+ln -s /tmp/demo-omo ~/.omo
+
+# Launch
+opencode-kanban
+```
+
+### Status lifecycle
+
+| Action | Effect | Status change |
+|--------|--------|---------------|
+| Press `w` in detail overlay | Start work session | Drafting → **Active** |
+| (automatic) | Complete work | Active → **Completed** |
+
+Status is tracked in-memory in the adapter. Restarting the app resets all plans to Drafting.
+
+### Feature flag
+
+The omo integration is compiled in by default. To build without it:
+
+```bash
+cargo build --no-default-features
+```
+
+### Keybindings (omo)
+
+| Key | Context | Action |
+|-----|---------|--------|
+| `j` / `k` | Detail overlay | Scroll content |
+| `Enter` | Plan card in PLANS | Open detail overlay |
+| `w` | Detail overlay | Start work (tmux + opencode) |
+| `Esc` | Detail overlay | Close overlay |
+
+### Architecture
+
+See `docs/omo-integration.md` for the full architecture guide — adapter pattern, module structure (`types`, `reader`, `parser`, `fs_reader`, `adapter`, `notepad`), plan format, and notepad linkage.
+
 ## Keybindings cheat sheet
 
 - `Ctrl-p`: switch project

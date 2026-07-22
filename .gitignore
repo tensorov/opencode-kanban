@@ -10,3 +10,6 @@ __pycache__/
 # AUR deploy SSH keys (never commit)
 aur_deploy
 aur_deploy.pub
+
+# omo workflow artifacts
+.omo/

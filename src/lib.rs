@@ -8,6 +8,8 @@ pub mod keybindings;
 pub mod logging;
 pub mod matching;
 pub mod notification;
+#[cfg(feature = "omo")]
+pub mod omo;
 pub mod opencode;
 pub mod process;
 pub mod projects;

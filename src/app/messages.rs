@@ -123,4 +123,12 @@ pub enum Message {
     TaskSearchNext,
     TaskSearchPrev,
     ExitTaskSearch,
+    #[cfg(feature = "omo")]
+    OmoLoad,
+    #[cfg(feature = "omo")]
+    OmoSelectPlan(String),
+    #[cfg(feature = "omo")]
+    OmoStartWork(String),
+    #[cfg(feature = "omo")]
+    OmoDeselectPlan,
 }

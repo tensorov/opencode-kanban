@@ -7,6 +7,10 @@ description = "Terminal kanban board for managing OpenCode tmux sessions"
 license = "MIT"
 repository = "https://github.com/TomCC7/opencode-kanban"
 
+[features]
+default = ["omo"]
+omo = []
+
 [package.metadata.wix]
 upgrade-guid = "6F2426D8-489F-4113-8E68-66096E47726E"
 path-guid = "9AFE4EED-0C4C-4B0C-B038-9C5D7F843B14"

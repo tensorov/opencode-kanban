@@ -1,3 +1,6 @@
+#[cfg(feature = "omo")]
+use std::path::PathBuf;
+
 use super::*;
 use crate::notification::{CompletionSound, NotificationBackend};
 
@@ -43,7 +46,15 @@ impl App {
                 }
             }
             Message::NavigateRight => {
-                if self.focused_column + 1 < self.categories.len() {
+                #[cfg(feature = "omo")]
+                let max_col = if self.omo_enabled {
+                    self.categories.len()
+                } else {
+                    self.categories.len().saturating_sub(1)
+                };
+                #[cfg(not(feature = "omo"))]
+                let max_col = self.categories.len().saturating_sub(1);
+                if self.focused_column < max_col {
                     self.focused_column += 1;
                 }
             }
@@ -494,9 +505,19 @@ impl App {
                 }
             }
             Message::FocusColumn(index) => {
-                if index < self.categories.len() {
+                #[cfg(feature = "omo")]
+                let max_col = if self.omo_enabled {
+                    self.categories.len()
+                } else {
+                    self.categories.len().saturating_sub(1)
+                };
+                #[cfg(not(feature = "omo"))]
+                let max_col = self.categories.len().saturating_sub(1);
+                if index <= max_col {
                     self.focused_column = index;
-                    self.selected_task_per_column.entry(index).or_insert(0);
+                    if index < self.categories.len() {
+                        self.selected_task_per_column.entry(index).or_insert(0);
+                    }
                 }
             }
             Message::SelectTask(column, index) => {
@@ -1041,6 +1062,83 @@ impl App {
                 }
             }
             Message::ToggleCategoryEditMode => {}
+            #[cfg(feature = "omo")]
+            Message::OmoLoad => {
+                if let Some(state) = &mut self.omo_state {
+                    let plans = state.reader.list_plans();
+                    let count = match &plans {
+                        Ok(list) => list.len(),
+                        Err(_) => 0,
+                    };
+                    state.plans_loaded = true;
+                    self.footer_notice = Some(format!("Loaded {count} omo plan(s)"));
+                }
+            }
+            #[cfg(feature = "omo")]
+            Message::OmoSelectPlan(slug) => {
+                if let Some(state) = &mut self.omo_state {
+                    state.active_plan_slug = Some(slug.clone());
+                }
+                self.omo_focused_plan = self
+                    .omo_plans
+                    .iter()
+                    .position(|p| p.slug == slug);
+            }
+            #[cfg(feature = "omo")]
+            Message::OmoDeselectPlan => {
+                if let Some(state) = &mut self.omo_state {
+                    state.active_plan_slug = None;
+                }
+            }
+            #[cfg(feature = "omo")]
+            Message::OmoStartWork(slug) => {
+                if let Some(adapter) = &mut self.omo_adapter {
+                    adapter.set_plan_status(&slug, crate::omo::types::PlanStatus::Active);
+                    adapter.load_plan(&slug);
+                }
+                if let Some(state) = &mut self.omo_state {
+                    state.active_plan_slug = Some(slug.clone());
+                }
+
+                if let Some(adapter) = &self.omo_adapter {
+                    self.omo_plans = adapter.get_plans().to_vec();
+                }
+
+                let omo_home = dirs::home_dir()
+                    .or_else(|| std::env::var("HOME").ok().map(PathBuf::from))
+                    .unwrap_or_default()
+                    .join(".omo");
+                let notepads = crate::omo::notepad::discover_notepads(&omo_home);
+                let working_dir = crate::omo::notepad::plan_to_notepad(&slug, &notepads)
+                    .and_then(|n| n.path.parent().map(|p| p.to_path_buf()))
+                    .unwrap_or_else(|| omo_home.clone());
+
+                if let Some(notepad) = crate::omo::notepad::plan_to_notepad(&slug, &notepads) {
+                    let now = chrono::Local::now().format("%Y-%m-%d %H:%M");
+                    let marker = format!("# Session started: {}\n", now);
+                    match std::fs::read_to_string(&notepad.path) {
+                        Ok(content) => {
+                            if std::fs::write(&notepad.path, marker + &content).is_err() {
+                                tracing::warn!("failed to prepend session marker to {:?}", notepad.path);
+                            }
+                        }
+                        Err(_) => {
+                            let _ = std::fs::write(&notepad.path, &marker);
+                        }
+                    }
+                }
+
+                let session_name = format!("omo-{}", slug);
+                match crate::tmux::tmux_create_session(&session_name, &working_dir, Some("opencode")) {
+                    Ok(_) => {
+                        self.footer_notice = Some(format!("Started '{}' in tmux session {}", slug, session_name));
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to create tmux session for plan '{}': {}", slug, e);
+                        self.footer_notice = Some(format!("Started '{}' but tmux session creation failed", slug));
+                    }
+                }
+            }
         }
 
         Ok(())

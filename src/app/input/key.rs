@@ -10,6 +10,29 @@ use crate::keybindings::{KeyAction, KeyContext};
 
 impl App {
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+        #[cfg(feature = "omo")]
+        // Omo detail overlay intercept
+        if self.omo_detail_content.is_some() {
+            match key.code {
+                KeyCode::Esc => { self.omo_detail_content = None; self.omo_detail_scroll = 0; }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let max = self.omo_detail_content.as_ref().map(|c| c.len().saturating_sub(1)).unwrap_or(0);
+                    self.omo_detail_scroll = (self.omo_detail_scroll + 1).min(max.saturating_sub(10));
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.omo_detail_scroll = self.omo_detail_scroll.saturating_sub(1);
+                }
+                KeyCode::Char('w') => {
+                    if let Some(idx) = self.omo_focused_plan
+                        && let Some(plan) = self.omo_plans.get(idx)
+                    {
+                        self.update(Message::OmoStartWork(plan.slug.clone()))?;
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
         if self.active_dialog != ActiveDialog::None {
             if let ActiveDialog::Help = self.active_dialog
                 && self.keybindings.action_for_key(KeyContext::Global, key)
@@ -324,6 +347,53 @@ impl App {
                     self.update(Message::MoveTaskUp)?;
                 }
                 KeyAction::AttachTask => {
+                    #[cfg(feature = "omo")]
+                    // If on PLANS column, show detail overlay instead of attaching
+                    if self.omo_enabled && self.focused_column == self.categories.len() {
+                        if let Some(plan_idx) = self.omo_focused_plan
+                            && let Some(plan) = self.omo_plans.get(plan_idx)
+                        {
+                            let slug = plan.slug.clone();
+                            if let Some(adapter) = &mut self.omo_adapter {
+                                adapter.load_plan(&slug);
+                                if let Some(detail) = adapter.get_plan_detail(&slug) {
+                                        let mut lines = vec![format!("=== {} ===", detail.title)];
+                                        lines.push(format!("  Status: {}", detail.status));
+                                        if let Some(ref tl_dr) = detail.tl_dr { lines.push(format!("  TL;DR: {}", tl_dr)); }
+                                        if !detail.scope_in.is_empty() { lines.push(format!("  Scope in: {}", detail.scope_in.join(", "))); }
+                                        if !detail.scope_out.is_empty() { lines.push(format!("  Scope out: {}", detail.scope_out.join(", "))); }
+                                        if let Some(ref slug) = detail.notepad_slug { lines.push(format!("  Notepad: {}", slug)); }
+                                        lines.push(String::new());
+                                        lines.push("-- Checklist --".to_string());
+                                        for c in &detail.checklist {
+                                            let mark = if c.done { "[x]" } else { "[ ]" };
+                                            lines.push(format!("  {} {} (level {})", mark, c.text, c.level));
+                                        }
+                                        if let Some(state) = &self.omo_state {
+                                            let matching =
+                                                crate::omo::notepad::plan_to_notepad(
+                                                    &slug,
+                                                    &state.notepads,
+                                                );
+                                            if let Some(notepad) = matching {
+                                                lines.push(String::new());
+                                                lines.push("-- Notepad --".to_string());
+                                                for line in notepad.excerpt.lines() {
+                                                    lines.push(format!("  {}", line));
+                                                }
+                                                lines.push("--".to_string());
+                                            }
+                                        }
+                                        self.omo_detail_content = Some(lines);
+                                        self.omo_detail_scroll = 0;
+                                        if let Some(state) = &mut self.omo_state {
+                                            state.active_plan_slug = Some(slug);
+                                        }
+                                    }
+                                }
+                            }
+                        return Ok(());
+                    }
                     self.update(Message::AttachSelectedTask)?;
                 }
                 KeyAction::OpenInNewTerminal => {

@@ -1319,6 +1319,13 @@ mod tests {
             project_detail_cache: None,
             last_click: None,
             pending_gg_at: None,
+            omo_enabled: false,
+            omo_state: None,
+            omo_adapter: None,
+            omo_plans: Vec::new(),
+            omo_focused_plan: None,
+            omo_detail_content: None,
+            omo_detail_scroll: 0,
         };
 
         app.refresh_data()?;

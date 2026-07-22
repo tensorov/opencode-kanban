@@ -20,6 +20,8 @@ use tuirealm::{
         },
     },
 };
+#[cfg(feature = "omo")]
+use tuirealm::ratatui::layout::Margin;
 
 use crate::app::interaction::InteractionLayer;
 use crate::app::{
@@ -247,6 +249,10 @@ fn render_board(frame: &mut Frame<'_>, app: &mut App) {
         render_log_expanded_overlay(frame, chunks[1], app);
     }
     render_footer(frame, chunks[2], app);
+    #[cfg(feature = "omo")]
+    if app.omo_detail_content.is_some() {
+        draw_plan_detail_overlay(frame, app, chunks[1]);
+    }
 }
 
 fn render_archive(frame: &mut Frame<'_>, app: &App) {
@@ -508,6 +514,40 @@ fn render_footer_label(frame: &mut Frame<'_>, area: Rect, notice: &str, fg: Colo
     footer.view(frame, area);
 }
 
+#[cfg(feature = "omo")]
+fn draw_plan_detail_overlay(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let content = match &app.omo_detail_content {
+        Some(c) => c,
+        None => return,
+    };
+    let t = app.theme;
+    let h = (content.len() as u16).min(30).saturating_add(4);
+    let w = area.width.min(70);
+    let o = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
+
+    Paragraph::default().background(t.dialog.surface).text(vec![TextSpan::from("")]).view(frame, o);
+
+    let scroll = app.omo_detail_scroll;
+    let vis = o.height.saturating_sub(4) as usize;
+    let lines: Vec<TextSpan> = content.iter().skip(scroll).take(vis).map(|line| {
+        if line.starts_with("==") { TextSpan::from(line.as_str()).fg(t.base.header).bold() }
+        else if line.starts_with("--") { TextSpan::from(line.as_str()).fg(t.base.accent) }
+        else if line.contains("[x]") { TextSpan::from(line.as_str()).fg(t.status.running) }
+        else if line.contains("[ ]") { TextSpan::from(line.as_str()).fg(t.base.text_muted) }
+        else { TextSpan::from(line.as_str()).fg(t.base.text) }
+    }).collect();
+
+    let text_area = o.inner(Margin { vertical: 1, horizontal: 2 });
+    Paragraph::default().foreground(t.base.text).background(t.dialog.surface).text(lines).view(frame, text_area);
+
+    let mut hint = Label::default()
+        .text("j/k:scroll  Esc:close")
+        .alignment(Alignment::Center)
+        .foreground(t.base.text_muted)
+        .background(t.dialog.surface);
+    hint.view(frame, Rect::new(o.x, o.y + o.height - 1, o.width, 1));
+}
+
 fn render_columns(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let theme = app.theme;
     if app.categories.is_empty() {
@@ -516,93 +556,142 @@ fn render_columns(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
 
     let sorted = sorted_categories(app);
-    let visible_columns: Vec<(usize, Category, Rect)> = if app.settings.board_alignment_mode
-        == "scroll"
-    {
-        let viewport_width = usize::from(area.width);
-        if viewport_width == 0 {
-            return;
-        }
+    #[cfg(feature = "omo")]
+    let has_plans = app.omo_enabled && !app.omo_plans.is_empty();
+    #[cfg(not(feature = "omo"))]
+    let has_plans = false;
 
-        let gap = 1usize;
-        let configured_width = usize::from(app.settings.scroll_column_width_chars);
-        let column_width = effective_scroll_column_width(configured_width, viewport_width);
-        let stride = column_width.saturating_add(gap);
-
-        let focused_slot = sorted
-            .iter()
-            .position(|(column_idx, _)| *column_idx == app.focused_column)
-            .unwrap_or(0);
-        let viewport_x = focused_viewport_offset(
-            app.kanban_viewport_x,
-            viewport_width,
-            column_width,
-            gap,
-            sorted.len(),
-            focused_slot,
-        );
-        app.kanban_viewport_x = viewport_x;
-
-        let mut visible = Vec::new();
-        for (slot, (column_idx, category)) in sorted.iter().enumerate() {
-            let left = slot.saturating_mul(stride);
-            let right = left.saturating_add(column_width);
-            let viewport_right = viewport_x.saturating_add(viewport_width);
-            if left < viewport_right && right > viewport_x {
-                let visible_left = left.max(viewport_x);
-                let visible_right = right.min(viewport_right);
-                let visible_width = visible_right.saturating_sub(visible_left);
-                if visible_width == 0 {
-                    continue;
-                }
-                let translated_x = visible_left.saturating_sub(viewport_x);
-                let rect = Rect::new(
-                    area.x.saturating_add(translated_x as u16),
-                    area.y,
-                    visible_width as u16,
-                    area.height,
-                );
-                visible.push((*column_idx, (*category).clone(), rect));
+    #[cfg_attr(not(feature = "omo"), allow(unused_variables))]
+    let (visible_columns, plans_rect): (Vec<(usize, Category, Rect)>, Option<Rect>) =
+        if app.settings.board_alignment_mode == "scroll" {
+            let viewport_width = usize::from(area.width);
+            if viewport_width == 0 {
+                return;
             }
-        }
 
-        if visible.is_empty() {
-            let focused = sorted
+            let gap = 1usize;
+            let configured_width = usize::from(app.settings.scroll_column_width_chars);
+            let column_width = effective_scroll_column_width(configured_width, viewport_width);
+            let stride = column_width.saturating_add(gap);
+            let total_cols = if has_plans {
+                sorted.len() + 1
+            } else {
+                sorted.len()
+            };
+
+            let focused_slot = sorted
+                .iter()
+                .position(|(column_idx, _)| *column_idx == app.focused_column)
+                .unwrap_or(0);
+            let viewport_x = focused_viewport_offset(
+                app.kanban_viewport_x,
+                viewport_width,
+                column_width,
+                gap,
+                total_cols,
+                focused_slot,
+            );
+            app.kanban_viewport_x = viewport_x;
+
+            let mut visible = Vec::new();
+            for (slot, (column_idx, category)) in sorted.iter().enumerate() {
+                let left = slot.saturating_mul(stride);
+                let right = left.saturating_add(column_width);
+                let viewport_right = viewport_x.saturating_add(viewport_width);
+                if left < viewport_right && right > viewport_x {
+                    let visible_left = left.max(viewport_x);
+                    let visible_right = right.min(viewport_right);
+                    let visible_width = visible_right.saturating_sub(visible_left);
+                    if visible_width == 0 {
+                        continue;
+                    }
+                    let translated_x = visible_left.saturating_sub(viewport_x);
+                    let rect = Rect::new(
+                        area.x.saturating_add(translated_x as u16),
+                        area.y,
+                        visible_width as u16,
+                        area.height,
+                    );
+                    visible.push((*column_idx, (*category).clone(), rect));
+                }
+            }
+
+            if visible.is_empty() {
+                let focused = sorted
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (column_idx, _))| *column_idx == app.focused_column)
+                    .unwrap_or((0, &sorted[0]));
+                let focused_left = focused.0.saturating_mul(stride);
+                let translated_x = focused_left.saturating_sub(viewport_x);
+                let width = column_width.min(viewport_width) as u16;
+                visible.push((
+                    focused.1.0,
+                    focused.1.1.clone(),
+                    Rect::new(
+                        area.x.saturating_add(translated_x as u16),
+                        area.y,
+                        width,
+                        area.height,
+                    ),
+                ));
+            }
+
+            let p_rect = if has_plans {
+                let plans_slot = sorted.len();
+                let plans_left = plans_slot.saturating_mul(stride);
+                let plans_right = plans_left.saturating_add(column_width);
+                let viewport_right = viewport_x.saturating_add(viewport_width);
+                if plans_left < viewport_right && plans_right > viewport_x {
+                    let vl = plans_left.max(viewport_x);
+                    let vr = plans_right.min(viewport_right);
+                    let vw = vr.saturating_sub(vl);
+                    if vw > 0 {
+                        Some(Rect::new(
+                            area.x.saturating_add((vl.saturating_sub(viewport_x)) as u16),
+                            area.y,
+                            vw as u16,
+                            area.height,
+                        ))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            (visible, p_rect)
+        } else {
+            app.kanban_viewport_x = 0;
+            let col_count = if has_plans {
+                sorted.len() + 1
+            } else {
+                sorted.len()
+            };
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(vec![
+                    Constraint::Ratio(1, col_count as u32);
+                    col_count
+                ])
+                .split(area);
+            let cat_visible: Vec<_> = sorted
                 .iter()
                 .enumerate()
-                .find(|(_, (column_idx, _))| *column_idx == app.focused_column)
-                .unwrap_or((0, &sorted[0]));
-            let focused_left = focused.0.saturating_mul(stride);
-            let translated_x = focused_left.saturating_sub(viewport_x);
-            let width = column_width.min(viewport_width) as u16;
-            visible.push((
-                focused.1.0,
-                focused.1.1.clone(),
-                Rect::new(
-                    area.x.saturating_add(translated_x as u16),
-                    area.y,
-                    width,
-                    area.height,
-                ),
-            ));
-        }
-
-        visible
-    } else {
-        app.kanban_viewport_x = 0;
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(vec![
-                Constraint::Ratio(1, sorted.len() as u32);
-                sorted.len()
-            ])
-            .split(area);
-        sorted
-            .iter()
-            .enumerate()
-            .map(|(slot, (column_idx, category))| (*column_idx, (*category).clone(), columns[slot]))
-            .collect()
-    };
+                .map(|(slot, (column_idx, category))| {
+                    (*column_idx, (*category).clone(), columns[slot])
+                })
+                .collect();
+            let p_rect = if has_plans {
+                Some(columns[sorted.len()])
+            } else {
+                None
+            };
+            (cat_visible, p_rect)
+        };
 
     let mut hit_test_entries: Vec<(Rect, Message, bool)> = Vec::new();
 
@@ -718,6 +807,12 @@ fn render_columns(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 frame.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
             }
         }
+    }
+
+    #[cfg(feature = "omo")]
+    if let Some(rect) = plans_rect && rect.width > 2 && rect.height > 4 {
+        let plans_idx = sorted.len();
+        draw_plan_column(frame, rect, app, plans_idx, &mut hit_test_entries);
     }
 
     for (rect, message, is_task) in hit_test_entries {
@@ -3435,6 +3530,137 @@ fn tasks_for_category(app: &App, category_id: uuid::Uuid) -> Vec<Task> {
         .collect();
     tasks.sort_by_key(|task| task.position);
     tasks
+}
+
+#[cfg(feature = "omo")]
+fn draw_plan_column(
+    frame: &mut Frame<'_>,
+    rect: Rect,
+    app: &App,
+    column_idx: usize,
+    hit_test_entries: &mut Vec<(Rect, Message, bool)>,
+) {
+    let theme = app.theme;
+    let plans = &app.omo_plans;
+    let is_focused_column = column_idx == app.focused_column;
+    let selected_plan = app
+        .omo_focused_plan
+        .unwrap_or(0)
+        .min(plans.len().saturating_sub(1));
+    let viewport_lines = list_inner_height(rect);
+    let show_scrollbar = viewport_lines > 0 && plans.len() > viewport_lines;
+    let inner_width = list_inner_width(rect).saturating_sub(usize::from(show_scrollbar));
+    let accent = theme.interactive.focus;
+
+    let mut rows = TableBuilder::default();
+
+    for (i, plan) in plans.iter().enumerate() {
+        let is_selected = is_focused_column && i == selected_plan;
+        let is_hovered =
+            app.hovered_message.as_ref() == Some(&Message::OmoSelectPlan(plan.slug.clone()));
+        let tile = theme.tile_colors(is_selected || is_hovered);
+        let bg = tile.background;
+
+        let status_symbol = match plan.status {
+            crate::omo::types::PlanStatus::Drafting => "\u{25CB}",
+            crate::omo::types::PlanStatus::Active => "\u{25C9}",
+            crate::omo::types::PlanStatus::Completed => "\u{2713}",
+        };
+        let progress = if plan.checklist_total > 0 {
+            format!(" {}/{}", plan.checklist_done, plan.checklist_total)
+        } else {
+            String::new()
+        };
+        let line = pad_to_width(
+            &format!(" {} {}{}", status_symbol, plan.title, progress),
+            inner_width,
+        );
+
+        let textspan = if plan.status == crate::omo::types::PlanStatus::Active {
+            TextSpan::new(line).fg(theme.base.text).bg(bg).bold()
+        } else {
+            TextSpan::new(line).fg(theme.base.text).bg(bg)
+        };
+        rows.add_col(textspan)
+            .add_col(TextSpan::new("").bg(bg))
+            .add_row();
+    }
+
+    if plans.is_empty() {
+        rows.add_col(TextSpan::from("No plans")).add_row();
+    }
+
+    let row_heights: Vec<usize> = (0..plans.len()).map(|_| 1usize).collect();
+    let selected_line = selected_line_for_row_heights(&row_heights, selected_plan);
+
+    let mut list = List::default()
+        .title(format!("PLANS ({})", plans.len()), Alignment::Left)
+        .borders(rounded_borders(accent))
+        .foreground(theme.base.text)
+        .background(theme.base.surface)
+        .scroll(true)
+        .rows(rows.build())
+        .selected_line(selected_line)
+        .inactive(Style::default().fg(theme.base.text_muted));
+    list.attr(
+        Attribute::Focus,
+        AttrValue::Flag(is_focused_column),
+    );
+    list.view(frame, rect);
+
+    let scroll_offset = column_scroll_offset(selected_line, plans.len(), viewport_lines);
+    let col_rect = rect;
+    let content_x = col_rect.x + 1;
+    let content_y_base = col_rect.y + 2;
+    let content_width = col_rect.width.saturating_sub(2);
+
+    if content_width > 0 {
+        for (plan_idx, plan) in plans.iter().enumerate() {
+            let tile_start_line = plan_idx;
+            if tile_start_line >= scroll_offset
+                && tile_start_line < scroll_offset + viewport_lines
+            {
+                let visible_y = content_y_base + (tile_start_line - scroll_offset) as u16;
+                let plan_rect = Rect::new(content_x, visible_y, content_width, 1);
+                hit_test_entries.push((
+                    plan_rect,
+                    Message::OmoSelectPlan(plan.slug.clone()),
+                    false,
+                ));
+            }
+        }
+    }
+
+    if col_rect.width > 0 {
+        let header_rect = Rect::new(col_rect.x, col_rect.y, col_rect.width, 2);
+        hit_test_entries.push((header_rect, Message::FocusColumn(column_idx), false));
+    }
+
+    if show_scrollbar {
+        let mut state = ScrollbarState::new(plans.len())
+            .position(scrollbar_position_for_offset(
+                scroll_offset,
+                plans.len(),
+                viewport_lines,
+            ))
+            .viewport_content_length(viewport_lines);
+        let thumb_color = if is_focused_column {
+            accent
+        } else {
+            theme.base.text_muted
+        };
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("\u{2502}"))
+            .track_style(RatatuiStyle::default().fg(theme.base.text_muted))
+            .thumb_style(RatatuiStyle::default().fg(thumb_color))
+            .thumb_symbol("\u{2588}");
+        let scrollbar_area = inset_rect(rect, 1, 1);
+        if scrollbar_area.width > 0 && scrollbar_area.height > 0 {
+            frame.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
+        }
+    }
 }
 
 fn sorted_categories(app: &App) -> Vec<(usize, Category)> {
